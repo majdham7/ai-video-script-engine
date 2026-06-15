@@ -1,7 +1,12 @@
 {
   "permissions": {
     "allow": [
-      "Bash(npx --yes create-next-app@latest . --typescript --tailwind --eslint --app --src-dir=false --import-alias \"@/*\" --use-npm --no-turbopack)"
+      "Bash(npx --yes create-next-app@latest . --typescript --tailwind --eslint --app --src-dir=false --import-alias \"@/*\" --use-npm --no-turbopack)",
+      "Bash(npm install *)",
+      "Bash(npx tsc *)",
+      "Bash(npx eslint *)",
+      "Bash(OPENAI_API_KEY=dummy npm run build)",
+      "Bash(git add *)"
     ]
   }
 }

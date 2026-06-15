@@ -1,0 +1,160 @@
+import { NextRequest, NextResponse } from "next/server";
+import OpenAI from "openai";
+
+// The set of styles the frontend is allowed to send. Keeping this in sync
+// with the dropdown in app/page.tsx so we can validate incoming requests.
+const ALLOWED_STYLES = [
+  "TikTok Ad",
+  "Cinematic",
+  "Documentary",
+  "Luxury Brand",
+  "Funny Meme",
+  "Startup Promo",
+] as const;
+
+// Shape of a single storyboard scene returned by the model.
+interface Scene {
+  startTime: string;
+  endTime: string;
+  voiceoverText: string;
+  visualPrompt: string;
+  brollIdeas: string[];
+  captionText: string;
+  cameraMovement: string;
+  editingNotes: string;
+  soundEffects: string[];
+}
+
+// Overall shape of the video plan returned to the client.
+interface VideoPlan {
+  videoTitle: string;
+  overallTheme: string;
+  musicStyle: string;
+  colorPalette: string[];
+  scenes: Scene[];
+}
+
+// Lazily create the OpenAI client so the API key is only required at request
+// time (not at build time, which would break builds without the env var set).
+function getOpenAIClient() {
+  const apiKey = process.env.OPENAI_API_KEY;
+  if (!apiKey) {
+    throw new Error("OPENAI_API_KEY environment variable is not set");
+  }
+  return new OpenAI({ apiKey });
+}
+
+export async function POST(req: NextRequest) {
+  let body: { script?: unknown; style?: unknown };
+
+  try {
+    body = await req.json();
+  } catch {
+    return NextResponse.json(
+      { error: "Request body must be valid JSON." },
+      { status: 400 }
+    );
+  }
+
+  const { script, style } = body;
+
+  // Basic input validation before we spend a call on the model.
+  if (typeof script !== "string" || script.trim().length === 0) {
+    return NextResponse.json(
+      { error: "`script` is required and must be a non-empty string." },
+      { status: 400 }
+    );
+  }
+
+  if (
+    typeof style !== "string" ||
+    !ALLOWED_STYLES.includes(style as (typeof ALLOWED_STYLES)[number])
+  ) {
+    return NextResponse.json(
+      {
+        error: `\`style\` must be one of: ${ALLOWED_STYLES.join(", ")}`,
+      },
+      { status: 400 }
+    );
+  }
+
+  let client: OpenAI;
+  try {
+    client = getOpenAIClient();
+  } catch (err) {
+    return NextResponse.json(
+      { error: (err as Error).message },
+      { status: 500 }
+    );
+  }
+
+  // System prompt instructs the model to act as a storyboard planner and to
+  // respond with strict JSON matching our VideoPlan shape.
+  const systemPrompt = `You are an expert video director and storyboard planner.
+Given a script and a desired style, break the script down into a shot-by-shot
+storyboard plan. Respond with ONLY valid JSON (no markdown, no code fences)
+matching exactly this TypeScript shape:
+
+{
+  "videoTitle": string,
+  "overallTheme": string,
+  "musicStyle": string,
+  "colorPalette": string[], // hex color codes or color names
+  "scenes": [
+    {
+      "startTime": string,     // e.g. "0:00"
+      "endTime": string,       // e.g. "0:05"
+      "voiceoverText": string,
+      "visualPrompt": string,  // descriptive prompt for an image/video generator
+      "brollIdeas": string[],
+      "captionText": string,
+      "cameraMovement": string,
+      "editingNotes": string,
+      "soundEffects": string[]
+    }
+  ]
+}
+
+Break the script into multiple short scenes covering the full runtime.
+Tailor tone, pacing, visuals, and music to the requested style.`;
+
+  const userPrompt = `Style: ${style}\n\nScript:\n${script}`;
+
+  try {
+    const completion = await client.chat.completions.create({
+      model: "gpt-4o-mini",
+      temperature: 0.8,
+      response_format: { type: "json_object" },
+      messages: [
+        { role: "system", content: systemPrompt },
+        { role: "user", content: userPrompt },
+      ],
+    });
+
+    const raw = completion.choices[0]?.message?.content;
+    if (!raw) {
+      return NextResponse.json(
+        { error: "Model returned an empty response." },
+        { status: 502 }
+      );
+    }
+
+    let plan: VideoPlan;
+    try {
+      plan = JSON.parse(raw) as VideoPlan;
+    } catch {
+      return NextResponse.json(
+        { error: "Model returned malformed JSON." },
+        { status: 502 }
+      );
+    }
+
+    return NextResponse.json(plan, { status: 200 });
+  } catch (err) {
+    console.error("generate-video-plan error:", err);
+    return NextResponse.json(
+      { error: "Failed to generate video plan. Please try again." },
+      { status: 500 }
+    );
+  }
+}

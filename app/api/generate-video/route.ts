@@ -1,16 +1,23 @@
 import { NextRequest } from "next/server";
 import RunwayML from "@runwayml/sdk";
 import { ElevenLabsClient } from "@elevenlabs/elevenlabs-js";
-import OpenAI from "openai";
 import ffmpeg from "fluent-ffmpeg";
-import ffmpegStatic from "ffmpeg-static";
+import sharp from "sharp";
+import { execSync } from "child_process";
 import fs from "fs";
 import fsp from "fs/promises";
 import path from "path";
 import { Readable } from "stream";
 
-// Point fluent-ffmpeg at the bundled static binary.
-ffmpeg.setFfmpegPath(ffmpegStatic as string);
+// Use the system ffmpeg (Homebrew) — avoids Next.js bundler mangling ffmpeg-static paths.
+const FFMPEG_PATH = (() => {
+  try {
+    return execSync("which ffmpeg").toString().trim();
+  } catch {
+    return "/opt/homebrew/bin/ffmpeg"; // Homebrew default on Apple Silicon
+  }
+})();
+ffmpeg.setFfmpegPath(FFMPEG_PATH);
 
 // Temporary directory for all intermediate and final files.
 const TMP_DIR = path.join("/tmp", "engine-videos");
@@ -42,42 +49,50 @@ function sseEvent(data: object): Uint8Array {
 // Step helpers
 // ---------------------------------------------------------------------------
 
-// 1. DALL-E 3: generate a keyframe image URL from a visual prompt.
-async function generateKeyframe(
-  openai: OpenAI,
-  visualPrompt: string,
-  style: string
-): Promise<string> {
-  const response = await openai.images.generate({
-    model: "dall-e-3",
-    prompt: `${style} style cinematic still frame: ${visualPrompt}`,
-    n: 1,
-    size: "1792x1024", // 16:9-ish
-    quality: "standard",
-  });
+// 1. Create a simple dark seed image using sharp (no external API needed).
+//    Runway uses this as a starting frame but the text prompt drives the visuals.
+async function createSeedImage(outputPath: string): Promise<string> {
+  // Create a dark-to-slightly-lighter gradient so Runway has texture to work with.
+  const width = 1280;
+  const height = 720;
+  const pixels = Buffer.alloc(width * height * 3);
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      const i = (y * width + x) * 3;
+      pixels[i] = Math.floor(10 + (x / width) * 20);     // R
+      pixels[i + 1] = Math.floor(10 + (y / height) * 15); // G
+      pixels[i + 2] = Math.floor(20 + (x / width) * 30); // B
+    }
+  }
+  await sharp(pixels, { raw: { width, height, channels: 3 } })
+    .png()
+    .toFile(outputPath);
 
-  const url = response.data?.[0]?.url;
-  if (!url) throw new Error("DALL-E returned no image URL.");
-  return url;
+  return outputPath;
 }
 
-// 2. Runway Gen-3: animate the keyframe into a 5-second video clip.
+// 2. Runway Gen-4 Turbo: animate the seed image into a 5-second video clip.
 //    The API is asynchronous — we create a task then poll until done.
 async function generateClip(
   runway: RunwayML,
-  imageUrl: string,
+  imagePath: string,
   visualPrompt: string,
-  cameraMovement: string
+  cameraMovement: string,
+  style: string
 ): Promise<string> {
+  // Runway accepts base64 data URLs directly.
+  const imageBuffer = await fsp.readFile(imagePath);
+  const imageDataUrl = `data:image/png;base64,${imageBuffer.toString("base64")}`;
+
   const task = await runway.imageToVideo.create({
     model: "gen4_turbo",
-    promptImage: imageUrl,
-    promptText: `${visualPrompt}. Camera: ${cameraMovement}.`,
+    promptImage: imageDataUrl,
+    promptText: `${style} style. ${visualPrompt}. Camera: ${cameraMovement}.`,
     duration: 5,
     ratio: "1280:720",
   });
 
-  // Poll every 8 seconds until the clip is ready.
+  // Poll every 8 seconds until the clip is ready (typically 45–90s).
   let result = await runway.tasks.retrieve(task.id);
   while (result.status !== "SUCCEEDED" && result.status !== "FAILED") {
     await new Promise((r) => setTimeout(r, 8000));
@@ -98,23 +113,23 @@ async function generateVoiceover(
   text: string,
   outputPath: string
 ): Promise<string> {
-  // "Rachel" is a clear, neutral English voice available on all plans.
+  // "Rachel" — clear, neutral English voice available on all plans.
   const audioStream = await eleven.textToSpeech.convert("21m00Tcm4TlvDq8ikWAM", {
     text,
     modelId: "eleven_multilingual_v2",
     voiceSettings: { stability: 0.5, similarityBoost: 0.75 },
   });
 
-  await fsp.writeFile(outputPath, Buffer.from(await streamToBuffer(audioStream as unknown as Readable)));
+  const buffer = await streamToBuffer(audioStream as unknown as Readable);
+  await fsp.writeFile(outputPath, buffer);
   return outputPath;
 }
 
-// 4. Download a remote video/image URL and save it locally.
+// 4. Download a remote video URL and save it locally.
 async function downloadFile(url: string, dest: string): Promise<string> {
   const res = await fetch(url);
   if (!res.ok) throw new Error(`Failed to download ${url}: ${res.status}`);
-  const buffer = Buffer.from(await res.arrayBuffer());
-  await fsp.writeFile(dest, buffer);
+  await fsp.writeFile(dest, Buffer.from(await res.arrayBuffer()));
   return dest;
 }
 
@@ -138,11 +153,11 @@ async function mergeVideoAudio(
       .input(videoPath)
       .input(audioPath)
       .outputOptions([
-        "-c:v copy",      // keep original video codec
-        "-c:a aac",       // encode audio to AAC
-        "-shortest",      // trim to shortest stream (video or audio)
-        "-map 0:v:0",     // take video from first input
-        "-map 1:a:0",     // take audio from second input
+        "-c:v copy",   // keep original video codec
+        "-c:a aac",    // encode audio to AAC
+        "-shortest",   // trim to shortest stream
+        "-map 0:v:0",
+        "-map 1:a:0",
       ])
       .output(outputPath)
       .on("end", () => resolve(outputPath))
@@ -156,12 +171,8 @@ async function concatenateClips(
   clipPaths: string[],
   outputPath: string
 ): Promise<string> {
-  // Write a concat demuxer list file.
   const listPath = path.join(TMP_DIR, "concat_list.txt");
-  const listContent = clipPaths
-    .map((p) => `file '${p}'`)
-    .join("\n");
-  await fsp.writeFile(listPath, listContent);
+  await fsp.writeFile(listPath, clipPaths.map((p) => `file '${p}'`).join("\n"));
 
   return new Promise((resolve, reject) => {
     ffmpeg()
@@ -180,12 +191,9 @@ async function concatenateClips(
 // ---------------------------------------------------------------------------
 
 export async function POST(req: NextRequest) {
-  // Validate environment variables up front.
-  const missingVars = [
-    "OPENAI_API_KEY",
-    "RUNWAYML_API_SECRET",
-    "ELEVENLABS_API_KEY",
-  ].filter((k) => !process.env[k]);
+  const missingVars = ["RUNWAYML_API_SECRET", "ELEVENLABS_API_KEY"].filter(
+    (k) => !process.env[k]
+  );
 
   if (missingVars.length) {
     return new Response(
@@ -212,20 +220,14 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  // Initialise SDK clients.
-  const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
   const runway = new RunwayML({ apiKey: process.env.RUNWAYML_API_SECRET });
   const eleven = new ElevenLabsClient({ apiKey: process.env.ELEVENLABS_API_KEY });
 
-  // Unique working directory for this job.
   const jobId = Date.now().toString();
   const jobDir = path.join(TMP_DIR, jobId);
   await fsp.mkdir(jobDir, { recursive: true });
-
-  // The final output filename — accessible via /api/video/[jobId]/final.mp4
   const finalOutputPath = path.join(jobDir, "final.mp4");
 
-  // Stream SSE progress events back to the client.
   const stream = new ReadableStream({
     async start(controller) {
       const send = (data: object) => controller.enqueue(sseEvent(data));
@@ -238,23 +240,19 @@ export async function POST(req: NextRequest) {
           const sceneNum = i + 1;
           const total = scenes.length;
 
-          // --- Step A: Generate keyframe image ---
-          send({ type: "progress", scene: sceneNum, total, step: "image", message: `Scene ${sceneNum}/${total}: Generating keyframe with DALL-E…` });
-          const imageUrl = await generateKeyframe(openai, scene.visualPrompt, style);
+          // --- Step A: Create seed image with sharp ---
+          send({ type: "progress", scene: sceneNum, total, step: "image", message: `Scene ${sceneNum}/${total}: Preparing seed frame…` });
+          const seedPath = path.join(jobDir, `scene${sceneNum}_seed.png`);
+          await createSeedImage(seedPath);
 
-          // Download the image locally so Runway can fetch it if needed.
-          const imagePath = path.join(jobDir, `scene${sceneNum}_frame.png`);
-          await downloadFile(imageUrl, imagePath);
-
-          // --- Step B: Animate with Runway ---
-          send({ type: "progress", scene: sceneNum, total, step: "video", message: `Scene ${sceneNum}/${total}: Animating with Runway Gen-4… (this takes ~1 min)` });
-          const clipUrl = await generateClip(runway, imageUrl, scene.visualPrompt, scene.cameraMovement);
-
+          // --- Step B: Generate video clip with Runway ---
+          send({ type: "progress", scene: sceneNum, total, step: "video", message: `Scene ${sceneNum}/${total}: Generating video with Runway Gen-4… (~1 min)` });
+          const clipUrl = await generateClip(runway, seedPath, scene.visualPrompt, scene.cameraMovement, style);
           const clipPath = path.join(jobDir, `scene${sceneNum}_clip.mp4`);
           await downloadFile(clipUrl, clipPath);
 
           // --- Step C: Voiceover with ElevenLabs ---
-          send({ type: "progress", scene: sceneNum, total, step: "audio", message: `Scene ${sceneNum}/${total}: Recording voiceover with ElevenLabs…` });
+          send({ type: "progress", scene: sceneNum, total, step: "audio", message: `Scene ${sceneNum}/${total}: Recording voiceover…` });
           const audioPath = path.join(jobDir, `scene${sceneNum}_audio.mp3`);
           await generateVoiceover(eleven, scene.voiceoverText, audioPath);
 
@@ -266,24 +264,15 @@ export async function POST(req: NextRequest) {
           mergedClips.push(mergedPath);
         }
 
-        // --- Final step: Concatenate all scenes ---
+        // --- Final: Concatenate all scenes ---
         send({ type: "progress", scene: scenes.length, total: scenes.length, step: "concat", message: "Stitching all scenes into final video…" });
         await concatenateClips(mergedClips, finalOutputPath);
-
-        // Confirm the file exists before telling the client.
         await fsp.access(finalOutputPath, fs.constants.F_OK);
 
-        send({
-          type: "done",
-          videoUrl: `/api/video/${jobId}/final.mp4`,
-          videoTitle,
-        });
+        send({ type: "done", videoUrl: `/api/video/${jobId}/final.mp4`, videoTitle });
       } catch (err) {
         console.error("generate-video error:", err);
-        send({
-          type: "error",
-          message: err instanceof Error ? err.message : "Video generation failed.",
-        });
+        send({ type: "error", message: err instanceof Error ? err.message : "Video generation failed." });
       } finally {
         controller.close();
       }

@@ -4,10 +4,18 @@ import { ElevenLabsClient } from "@elevenlabs/elevenlabs-js";
 import ffmpeg from "fluent-ffmpeg";
 import sharp from "sharp";
 import { execSync } from "child_process";
+import dns from "dns";
+import { Agent, setGlobalDispatcher } from "undici";
 import fs from "fs";
 import fsp from "fs/promises";
 import path from "path";
 import { Readable } from "stream";
+
+// Force all fetch calls (including Runway SDK) to use IPv4.
+// Node 18+ fetch uses undici internally; without this, api.dev.runwayml.com
+// fails with ENOTFOUND on macOS because the default resolver prefers IPv6.
+dns.setDefaultResultOrder("ipv4first");
+setGlobalDispatcher(new Agent({ connect: { family: 4 } }));
 
 // Use the system ffmpeg (Homebrew) — avoids Next.js bundler mangling ffmpeg-static paths.
 const FFMPEG_PATH = (() => {
@@ -49,25 +57,15 @@ function sseEvent(data: object): Uint8Array {
 // Step helpers
 // ---------------------------------------------------------------------------
 
-// 1. Create a simple dark seed image using sharp (no external API needed).
-//    Runway uses this as a starting frame but the text prompt drives the visuals.
+// 1. Download a real photographic seed image from picsum.photos.
+//    Runway requires a realistic photo — synthetic gradients cause BAD_OUTPUT errors.
 async function createSeedImage(outputPath: string): Promise<string> {
-  // Create a dark-to-slightly-lighter gradient so Runway has texture to work with.
-  const width = 1280;
-  const height = 720;
-  const pixels = Buffer.alloc(width * height * 3);
-  for (let y = 0; y < height; y++) {
-    for (let x = 0; x < width; x++) {
-      const i = (y * width + x) * 3;
-      pixels[i] = Math.floor(10 + (x / width) * 20);     // R
-      pixels[i + 1] = Math.floor(10 + (y / height) * 15); // G
-      pixels[i + 2] = Math.floor(20 + (x / width) * 30); // B
-    }
-  }
-  await sharp(pixels, { raw: { width, height, channels: 3 } })
-    .png()
-    .toFile(outputPath);
-
+  // picsum.photos returns a random real photograph at the requested size.
+  const res = await fetch("https://picsum.photos/1280/720", { redirect: "follow" });
+  if (!res.ok) throw new Error(`Failed to fetch seed image: ${res.status}`);
+  const buffer = Buffer.from(await res.arrayBuffer());
+  // Resize to exactly 1280×720 to guarantee correct dimensions for Runway.
+  await sharp(buffer).resize(1280, 720).png().toFile(outputPath);
   return outputPath;
 }
 
@@ -100,7 +98,10 @@ async function generateClip(
   }
 
   if (result.status === "FAILED" || !result.output?.[0]) {
-    throw new Error(`Runway task ${task.id} failed.`);
+    const r = result as unknown as Record<string, unknown>;
+    const reason = r.failure ?? r.failureCode ?? "unknown reason";
+    console.error("Runway task failed:", JSON.stringify(result, null, 2));
+    throw new Error(`Runway task failed: ${reason}`);
   }
 
   return result.output[0]; // Public video URL

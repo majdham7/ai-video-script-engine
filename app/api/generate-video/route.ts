@@ -1,33 +1,26 @@
 import { NextRequest } from "next/server";
-import RunwayML from "@runwayml/sdk";
 import { ElevenLabsClient } from "@elevenlabs/elevenlabs-js";
 import ffmpeg from "fluent-ffmpeg";
-import sharp from "sharp";
 import { execSync } from "child_process";
 import dns from "dns";
 import { Agent, setGlobalDispatcher } from "undici";
+import jwt from "jsonwebtoken";
 import fs from "fs";
 import fsp from "fs/promises";
 import path from "path";
 import { Readable } from "stream";
 
-// Force all fetch calls (including Runway SDK) to use IPv4.
-// Node 18+ fetch uses undici internally; without this, api.dev.runwayml.com
-// fails with ENOTFOUND on macOS because the default resolver prefers IPv6.
+// Force IPv4 for all fetch calls — fixes ENOTFOUND on macOS where Node prefers IPv6.
 dns.setDefaultResultOrder("ipv4first");
 setGlobalDispatcher(new Agent({ connect: { family: 4 } }));
 
-// Use the system ffmpeg (Homebrew) — avoids Next.js bundler mangling ffmpeg-static paths.
+// Use Homebrew ffmpeg — Next.js bundler mangles ffmpeg-static paths.
 const FFMPEG_PATH = (() => {
-  try {
-    return execSync("which ffmpeg").toString().trim();
-  } catch {
-    return "/opt/homebrew/bin/ffmpeg"; // Homebrew default on Apple Silicon
-  }
+  try { return execSync("which ffmpeg").toString().trim(); }
+  catch { return "/opt/homebrew/bin/ffmpeg"; }
 })();
 ffmpeg.setFfmpegPath(FFMPEG_PATH);
 
-// Temporary directory for all intermediate and final files.
 const TMP_DIR = path.join("/tmp", "engine-videos");
 
 // ---------------------------------------------------------------------------
@@ -48,73 +41,105 @@ interface GenerateVideoBody {
   videoTitle: string;
 }
 
-// SSE helper — encodes a JSON object as a server-sent event line.
 function sseEvent(data: object): Uint8Array {
   return new TextEncoder().encode(`data: ${JSON.stringify(data)}\n\n`);
 }
 
 // ---------------------------------------------------------------------------
-// Step helpers
+// Kling AI helpers
+// Docs: https://docs.klingai.com/api-reference/video-generation
 // ---------------------------------------------------------------------------
 
-// 1. Download a real photographic seed image from picsum.photos.
-//    Runway requires a realistic photo — synthetic gradients cause BAD_OUTPUT errors.
-async function createSeedImage(outputPath: string): Promise<string> {
-  // picsum.photos returns a random real photograph at the requested size.
-  const res = await fetch("https://picsum.photos/1280/720", { redirect: "follow" });
-  if (!res.ok) throw new Error(`Failed to fetch seed image: ${res.status}`);
-  const buffer = Buffer.from(await res.arrayBuffer());
-  // Resize to exactly 1280×720 to guarantee correct dimensions for Runway.
-  await sharp(buffer).resize(1280, 720).png().toFile(outputPath);
-  return outputPath;
+// Kling uses short-lived JWT tokens for auth — regenerated per request.
+function makeKlingToken(accessKeyId: string, accessKeySecret: string): string {
+  return jwt.sign(
+    { iss: accessKeyId, exp: Math.floor(Date.now() / 1000) + 1800, nbf: Math.floor(Date.now() / 1000) - 5 },
+    accessKeySecret,
+    { algorithm: "HS256", header: { alg: "HS256", typ: "JWT" } }
+  );
 }
 
-// 2. Runway Gen-4 Turbo: animate the seed image into a 5-second video clip.
-//    The API is asynchronous — we create a task then poll until done.
-async function generateClip(
-  runway: RunwayML,
-  imagePath: string,
+// 1. Submit a text-to-video task to Kling and return the task ID.
+//    No seed image needed — Kling's text-to-video is strong enough to drive visuals.
+async function submitKlingTask(
+  accessKeyId: string,
+  accessKeySecret: string,
   visualPrompt: string,
   cameraMovement: string,
   style: string
 ): Promise<string> {
-  // Runway accepts base64 data URLs directly.
-  const imageBuffer = await fsp.readFile(imagePath);
-  const imageDataUrl = `data:image/png;base64,${imageBuffer.toString("base64")}`;
+  const token = makeKlingToken(accessKeyId, accessKeySecret);
 
-  const task = await runway.imageToVideo.create({
-    model: "gen4_turbo",
-    promptImage: imageDataUrl,
-    promptText: `${style} style. ${visualPrompt}. Camera: ${cameraMovement}.`,
-    duration: 5,
-    ratio: "1280:720",
+  const res = await fetch("https://api.klingai.com/v1/videos/text2video", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${token}`,
+    },
+    body: JSON.stringify({
+      model_name: "kling-v1",
+      prompt: `${style} style. ${visualPrompt}. Camera movement: ${cameraMovement}. Cinematic quality, professional production.`,
+      negative_prompt: "blurry, low quality, distorted, amateur",
+      cfg_scale: 0.5,
+      mode: "std",  // "std" (faster/cheaper) or "pro" (higher quality)
+      duration: "5",
+    }),
   });
 
-  // Poll every 8 seconds until the clip is ready (typically 45–90s).
-  let result = await runway.tasks.retrieve(task.id);
-  while (result.status !== "SUCCEEDED" && result.status !== "FAILED") {
-    await new Promise((r) => setTimeout(r, 8000));
-    result = await runway.tasks.retrieve(task.id);
+  const json = (await res.json()) as { code: number; message: string; data?: { task_id: string } };
+  if (json.code !== 0 || !json.data?.task_id) {
+    throw new Error(`Kling submit failed: ${json.message}`);
   }
-
-  if (result.status === "FAILED" || !result.output?.[0]) {
-    const r = result as unknown as Record<string, unknown>;
-    const reason = r.failure ?? r.failureCode ?? "unknown reason";
-    console.error("Runway task failed:", JSON.stringify(result, null, 2));
-    throw new Error(`Runway task failed: ${reason}`);
-  }
-
-  return result.output[0]; // Public video URL
+  return json.data.task_id;
 }
 
-// 3. ElevenLabs: synthesise voiceover audio from text.
-//    Returns the path to the saved MP3 file.
+// 2. Poll Kling until the task succeeds, then return the video URL.
+async function pollKlingTask(
+  accessKeyId: string,
+  accessKeySecret: string,
+  taskId: string
+): Promise<string> {
+  for (let attempt = 0; attempt < 40; attempt++) {
+    await new Promise((r) => setTimeout(r, 8000));
+
+    const token = makeKlingToken(accessKeyId, accessKeySecret);
+    const res = await fetch(`https://api.klingai.com/v1/videos/text2video/${taskId}`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+
+    const json = (await res.json()) as {
+      code: number;
+      message: string;
+      data?: {
+        task_status: string;
+        task_result?: { videos?: { url: string }[] };
+      };
+    };
+
+    if (json.code !== 0) throw new Error(`Kling poll failed: ${json.message}`);
+
+    const status = json.data?.task_status;
+    if (status === "succeed") {
+      const url = json.data?.task_result?.videos?.[0]?.url;
+      if (!url) throw new Error("Kling succeeded but returned no video URL.");
+      return url;
+    }
+    if (status === "failed") throw new Error(`Kling task ${taskId} failed.`);
+    // status is "submitted" or "processing" — keep polling
+  }
+  throw new Error("Kling task timed out after 5 minutes.");
+}
+
+// ---------------------------------------------------------------------------
+// ElevenLabs voiceover
+// ---------------------------------------------------------------------------
+
 async function generateVoiceover(
   eleven: ElevenLabsClient,
   text: string,
   outputPath: string
 ): Promise<string> {
-  // "Rachel" — clear, neutral English voice available on all plans.
+  // "Rachel" — clear neutral English voice available on all plans.
   const audioStream = await eleven.textToSpeech.convert("21m00Tcm4TlvDq8ikWAM", {
     text,
     modelId: "eleven_multilingual_v2",
@@ -126,7 +151,10 @@ async function generateVoiceover(
   return outputPath;
 }
 
-// 4. Download a remote video URL and save it locally.
+// ---------------------------------------------------------------------------
+// FFmpeg helpers
+// ---------------------------------------------------------------------------
+
 async function downloadFile(url: string, dest: string): Promise<string> {
   const res = await fetch(url);
   if (!res.ok) throw new Error(`Failed to download ${url}: ${res.status}`);
@@ -134,7 +162,6 @@ async function downloadFile(url: string, dest: string): Promise<string> {
   return dest;
 }
 
-// Utility: drain a Node Readable stream into a Buffer.
 async function streamToBuffer(stream: Readable): Promise<Buffer> {
   const chunks: Buffer[] = [];
   for await (const chunk of stream) {
@@ -143,7 +170,6 @@ async function streamToBuffer(stream: Readable): Promise<Buffer> {
   return Buffer.concat(chunks);
 }
 
-// 5. FFmpeg: merge a video clip with its voiceover audio.
 async function mergeVideoAudio(
   videoPath: string,
   audioPath: string,
@@ -153,13 +179,7 @@ async function mergeVideoAudio(
     ffmpeg()
       .input(videoPath)
       .input(audioPath)
-      .outputOptions([
-        "-c:v copy",   // keep original video codec
-        "-c:a aac",    // encode audio to AAC
-        "-shortest",   // trim to shortest stream
-        "-map 0:v:0",
-        "-map 1:a:0",
-      ])
+      .outputOptions(["-c:v copy", "-c:a aac", "-shortest", "-map 0:v:0", "-map 1:a:0"])
       .output(outputPath)
       .on("end", () => resolve(outputPath))
       .on("error", reject)
@@ -167,11 +187,7 @@ async function mergeVideoAudio(
   });
 }
 
-// 6. FFmpeg: concatenate all merged scene clips into one final video.
-async function concatenateClips(
-  clipPaths: string[],
-  outputPath: string
-): Promise<string> {
+async function concatenateClips(clipPaths: string[], outputPath: string): Promise<string> {
   const listPath = path.join(TMP_DIR, "concat_list.txt");
   await fsp.writeFile(listPath, clipPaths.map((p) => `file '${p}'`).join("\n"));
 
@@ -192,9 +208,8 @@ async function concatenateClips(
 // ---------------------------------------------------------------------------
 
 export async function POST(req: NextRequest) {
-  const missingVars = ["RUNWAYML_API_SECRET", "ELEVENLABS_API_KEY"].filter(
-    (k) => !process.env[k]
-  );
+  const missingVars = ["KLING_ACCESS_KEY_ID", "KLING_ACCESS_KEY_SECRET", "ELEVENLABS_API_KEY"]
+    .filter((k) => !process.env[k]);
 
   if (missingVars.length) {
     return new Response(
@@ -221,7 +236,8 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  const runway = new RunwayML({ apiKey: process.env.RUNWAYML_API_SECRET });
+  const klingId = process.env.KLING_ACCESS_KEY_ID!;
+  const klingSecret = process.env.KLING_ACCESS_KEY_SECRET!;
   const eleven = new ElevenLabsClient({ apiKey: process.env.ELEVENLABS_API_KEY });
 
   const jobId = Date.now().toString();
@@ -241,14 +257,13 @@ export async function POST(req: NextRequest) {
           const sceneNum = i + 1;
           const total = scenes.length;
 
-          // --- Step A: Create seed image with sharp ---
-          send({ type: "progress", scene: sceneNum, total, step: "image", message: `Scene ${sceneNum}/${total}: Preparing seed frame…` });
-          const seedPath = path.join(jobDir, `scene${sceneNum}_seed.png`);
-          await createSeedImage(seedPath);
+          // --- Step A: Submit video task to Kling ---
+          send({ type: "progress", scene: sceneNum, total, step: "video", message: `Scene ${sceneNum}/${total}: Submitting to Kling AI…` });
+          const taskId = await submitKlingTask(klingId, klingSecret, scene.visualPrompt, scene.cameraMovement, style);
 
-          // --- Step B: Generate video clip with Runway ---
-          send({ type: "progress", scene: sceneNum, total, step: "video", message: `Scene ${sceneNum}/${total}: Generating video with Runway Gen-4… (~1 min)` });
-          const clipUrl = await generateClip(runway, seedPath, scene.visualPrompt, scene.cameraMovement, style);
+          // --- Step B: Poll until Kling finishes (~1–2 min) ---
+          send({ type: "progress", scene: sceneNum, total, step: "video", message: `Scene ${sceneNum}/${total}: Kling AI generating video… (~1–2 min)` });
+          const clipUrl = await pollKlingTask(klingId, klingSecret, taskId);
           const clipPath = path.join(jobDir, `scene${sceneNum}_clip.mp4`);
           await downloadFile(clipUrl, clipPath);
 
@@ -261,11 +276,10 @@ export async function POST(req: NextRequest) {
           send({ type: "progress", scene: sceneNum, total, step: "merge", message: `Scene ${sceneNum}/${total}: Merging video and audio…` });
           const mergedPath = path.join(jobDir, `scene${sceneNum}_merged.mp4`);
           await mergeVideoAudio(clipPath, audioPath, mergedPath);
-
           mergedClips.push(mergedPath);
         }
 
-        // --- Final: Concatenate all scenes ---
+        // --- Final: Stitch all scenes ---
         send({ type: "progress", scene: scenes.length, total: scenes.length, step: "concat", message: "Stitching all scenes into final video…" });
         await concatenateClips(mergedClips, finalOutputPath);
         await fsp.access(finalOutputPath, fs.constants.F_OK);
@@ -281,10 +295,6 @@ export async function POST(req: NextRequest) {
   });
 
   return new Response(stream, {
-    headers: {
-      "Content-Type": "text/event-stream",
-      "Cache-Control": "no-cache",
-      Connection: "keep-alive",
-    },
+    headers: { "Content-Type": "text/event-stream", "Cache-Control": "no-cache", Connection: "keep-alive" },
   });
 }

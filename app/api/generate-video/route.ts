@@ -1,7 +1,7 @@
 import { NextRequest } from "next/server";
 import { ElevenLabsClient } from "@elevenlabs/elevenlabs-js";
 import ffmpeg from "fluent-ffmpeg";
-import { execSync } from "child_process";
+import ffmpegInstaller from "@ffmpeg-installer/ffmpeg";
 import dns from "dns";
 import { Agent, setGlobalDispatcher } from "undici";
 import jwt from "jsonwebtoken";
@@ -14,12 +14,14 @@ import { Readable } from "stream";
 dns.setDefaultResultOrder("ipv4first");
 setGlobalDispatcher(new Agent({ connect: { family: 4 } }));
 
-// Use Homebrew ffmpeg — Next.js bundler mangles ffmpeg-static paths.
-const FFMPEG_PATH = (() => {
-  try { return execSync("which ffmpeg").toString().trim(); }
-  catch { return "/opt/homebrew/bin/ffmpeg"; }
-})();
-ffmpeg.setFfmpegPath(FFMPEG_PATH);
+// @ffmpeg-installer/ffmpeg bundles a platform-correct binary (macOS locally,
+// Linux on Vercel) — avoids relying on a Homebrew path that doesn't exist
+// in Vercel's serverless environment.
+ffmpeg.setFfmpegPath(ffmpegInstaller.path);
+
+// Vercel serverless functions default to a short timeout — extend it since
+// video generation (multiple Kling calls + ffmpeg) takes several minutes.
+export const maxDuration = 300;
 
 const TMP_DIR = path.join("/tmp", "engine-videos");
 
@@ -50,25 +52,20 @@ function sseEvent(data: object): Uint8Array {
 // Docs: https://docs.klingai.com/api-reference/video-generation
 // ---------------------------------------------------------------------------
 
-// Kling uses short-lived JWT tokens for auth — regenerated per request.
-function makeKlingToken(accessKeyId: string, accessKeySecret: string): string {
-  return jwt.sign(
-    { iss: accessKeyId, exp: Math.floor(Date.now() / 1000) + 1800, nbf: Math.floor(Date.now() / 1000) - 5 },
-    accessKeySecret,
-    { algorithm: "HS256", header: { alg: "HS256", typ: "JWT" } }
-  );
+// Kling uses a single Bearer API key for auth.
+function makeKlingToken(apiKey: string): string {
+  return apiKey;
 }
 
 // 1. Submit a text-to-video task to Kling and return the task ID.
 //    No seed image needed — Kling's text-to-video is strong enough to drive visuals.
 async function submitKlingTask(
-  accessKeyId: string,
-  accessKeySecret: string,
+  apiKey: string,
   visualPrompt: string,
   cameraMovement: string,
   style: string
 ): Promise<string> {
-  const token = makeKlingToken(accessKeyId, accessKeySecret);
+  const token = makeKlingToken(apiKey);
 
   const res = await fetch("https://api.klingai.com/v1/videos/text2video", {
     method: "POST",
@@ -77,7 +74,7 @@ async function submitKlingTask(
       Authorization: `Bearer ${token}`,
     },
     body: JSON.stringify({
-      model_name: "kling-v1",
+      model_name: "kling-v3",
       prompt: `${style} style. ${visualPrompt}. Camera movement: ${cameraMovement}. Cinematic quality, professional production.`,
       negative_prompt: "blurry, low quality, distorted, amateur",
       cfg_scale: 0.5,
@@ -95,14 +92,13 @@ async function submitKlingTask(
 
 // 2. Poll Kling until the task succeeds, then return the video URL.
 async function pollKlingTask(
-  accessKeyId: string,
-  accessKeySecret: string,
+  apiKey: string,
   taskId: string
 ): Promise<string> {
   for (let attempt = 0; attempt < 40; attempt++) {
     await new Promise((r) => setTimeout(r, 8000));
 
-    const token = makeKlingToken(accessKeyId, accessKeySecret);
+    const token = makeKlingToken(apiKey);
     const res = await fetch(`https://api.klingai.com/v1/videos/text2video/${taskId}`, {
       headers: { Authorization: `Bearer ${token}` },
     });
@@ -208,7 +204,7 @@ async function concatenateClips(clipPaths: string[], outputPath: string): Promis
 // ---------------------------------------------------------------------------
 
 export async function POST(req: NextRequest) {
-  const missingVars = ["KLING_ACCESS_KEY_ID", "KLING_ACCESS_KEY_SECRET", "ELEVENLABS_API_KEY"]
+  const missingVars = ["KLING_API_KEY", "ELEVENLABS_API_KEY"]
     .filter((k) => !process.env[k]);
 
   if (missingVars.length) {
@@ -236,8 +232,7 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  const klingId = process.env.KLING_ACCESS_KEY_ID!;
-  const klingSecret = process.env.KLING_ACCESS_KEY_SECRET!;
+  const klingApiKey = process.env.KLING_API_KEY!;
   const eleven = new ElevenLabsClient({ apiKey: process.env.ELEVENLABS_API_KEY });
 
   const jobId = Date.now().toString();
@@ -259,11 +254,11 @@ export async function POST(req: NextRequest) {
 
           // --- Step A: Submit video task to Kling ---
           send({ type: "progress", scene: sceneNum, total, step: "video", message: `Scene ${sceneNum}/${total}: Submitting to Kling AI…` });
-          const taskId = await submitKlingTask(klingId, klingSecret, scene.visualPrompt, scene.cameraMovement, style);
+          const taskId = await submitKlingTask(klingApiKey, scene.visualPrompt, scene.cameraMovement, style);
 
           // --- Step B: Poll until Kling finishes (~1–2 min) ---
           send({ type: "progress", scene: sceneNum, total, step: "video", message: `Scene ${sceneNum}/${total}: Kling AI generating video… (~1–2 min)` });
-          const clipUrl = await pollKlingTask(klingId, klingSecret, taskId);
+          const clipUrl = await pollKlingTask(klingApiKey, taskId);
           const clipPath = path.join(jobDir, `scene${sceneNum}_clip.mp4`);
           await downloadFile(clipUrl, clipPath);
 

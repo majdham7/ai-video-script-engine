@@ -10,12 +10,14 @@ const ALLOWED_STYLES = [
   "Startup Promo",
 ] as const;
 
-// Target scene counts per length selection.
+// Target scene counts per length selection — each scene becomes a 10s video
+// clip (see generate-video/route.ts), so these are calibrated to add up to
+// the actual requested runtime: 30s/10=3, 60s/10=6, 90s/10=9, 2min/10=12.
 const LENGTH_SCENE_COUNT: Record<string, number> = {
   "30s": 3,
-  "60s": 5,
-  "90s": 8,
-  "2min": 10,
+  "60s": 6,
+  "90s": 9,
+  "2min": 12,
 };
 
 interface Scene {
@@ -102,7 +104,9 @@ Respond with ONLY valid JSON (no markdown, no code fences) matching this shape:
   ]
 }
 
-Target video length: ${length} (${sceneCount} scenes).
+Target video length: ${length} (${sceneCount} scenes, each scene is exactly 10 seconds of video).
+Write voiceoverText for each scene long enough to take up most of its 10-second window
+when read at a natural pace (roughly 20-28 words) — short one-liners leave dead air.
 Tailor tone, pacing, visuals, and music to the requested style.`;
 
   const userPrompt = `Style: ${style}\nLength: ${length}\n\nScript:\n${script}`;

@@ -79,7 +79,7 @@ async function submitKlingTask(
       negative_prompt: "blurry, low quality, distorted, amateur",
       cfg_scale: 0.5,
       mode: "std",  // "std" (faster/cheaper) or "pro" (higher quality)
-      duration: "5",
+      duration: "10", // each scene becomes a 10s clip — matched to LENGTH_SCENE_COUNT below
     }),
   });
 
@@ -171,11 +171,15 @@ async function mergeVideoAudio(
   audioPath: string,
   outputPath: string
 ): Promise<string> {
+  // Pad the voiceover with silence so it never truncates the video — without
+  // this, "-shortest" alone would cut the clip down to match a short
+  // voiceover line, silently shrinking the total runtime.
   return new Promise((resolve, reject) => {
     ffmpeg()
       .input(videoPath)
       .input(audioPath)
-      .outputOptions(["-c:v copy", "-c:a aac", "-shortest", "-map 0:v:0", "-map 1:a:0"])
+      .complexFilter(["[1:a]apad[padded]"])
+      .outputOptions(["-map 0:v:0", "-map [padded]", "-c:v copy", "-c:a aac", "-shortest"])
       .output(outputPath)
       .on("end", () => resolve(outputPath))
       .on("error", reject)

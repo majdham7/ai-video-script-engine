@@ -102,6 +102,18 @@ export default function Home() {
   const [clipStatus, setClipStatus] = useState<string | null>(null);
   const clipPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
+  // Long Form state
+  const [lfFile, setLfFile] = useState<File | null>(null);
+  const [lfLength, setLfLength] = useState("60");
+  const [lfStyle, setLfStyle] = useState("highlights");
+  const [lfTitle, setLfTitle] = useState("");
+  const [lfEnv, setLfEnv] = useState<"sandbox" | "production">("sandbox");
+  const [lfRendering, setLfRendering] = useState(false);
+  const [lfStatus, setLfStatus] = useState<string | null>(null);
+  const [lfError, setLfError] = useState<string | null>(null);
+  const [lfResultUrl, setLfResultUrl] = useState<string | null>(null);
+  const lfPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
   // --- Creative Engine state ---
   const [imagePrompt, setImagePrompt] = useState("");
   const [imagePlatform, setImagePlatform] = useState<string>(PLATFORMS[0]);
@@ -275,6 +287,46 @@ export default function Home() {
     } catch (err) {
       setClipError(err instanceof Error ? err.message : "Unexpected error.");
       setClipping(false);
+    }
+  }
+
+  async function handleLfRender() {
+    if (!lfFile) { setLfError("Please select a video file."); return; }
+    setLfRendering(true); setLfError(null); setLfResultUrl(null); setLfStatus("Uploading video…");
+    try {
+      const form = new FormData();
+      form.append("video", lfFile);
+      form.append("outputLength", lfLength);
+      form.append("style", lfStyle);
+      form.append("title", lfTitle);
+      form.append("env", lfEnv);
+      const res = await fetch("/api/longform/render", { method: "POST", body: form });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error ?? "Failed to start render.");
+      const { renderId, env } = data as { renderId: string; env: string };
+      setLfStatus("Rendering video — this takes 1–3 minutes…");
+      if (lfPollRef.current) clearInterval(lfPollRef.current);
+      lfPollRef.current = setInterval(async () => {
+        try {
+          const poll = await fetch(`/api/longform/status?renderId=${renderId}&env=${env}`);
+          const pollData = await poll.json() as { status: string; url?: string; error?: string };
+          if (pollData.error) { clearInterval(lfPollRef.current!); setLfError(pollData.error); setLfRendering(false); return; }
+          setLfStatus(`Rendering… (${pollData.status})`);
+          if (pollData.status === "done" && pollData.url) {
+            clearInterval(lfPollRef.current!);
+            setLfResultUrl(pollData.url);
+            setLfRendering(false);
+            setLfStatus(null);
+          } else if (pollData.status === "failed") {
+            clearInterval(lfPollRef.current!);
+            setLfError("Render failed.");
+            setLfRendering(false);
+          }
+        } catch { /* keep polling */ }
+      }, 8000);
+    } catch (err) {
+      setLfError(err instanceof Error ? err.message : "Failed.");
+      setLfRendering(false);
     }
   }
 
@@ -673,16 +725,84 @@ export default function Home() {
         {/* LONG FORM EDIT TAB                                                  */}
         {/* ================================================================== */}
         {activeTab === "longform" && (
-          <section className="rounded-2xl border border-zinc-800 bg-zinc-900/60 p-8 text-center shadow-lg">
-            <div className="mb-4 text-4xl">🎞️</div>
-            <h2 className="mb-2 text-xl font-bold">Long Form Video Editor</h2>
-            <p className="mb-6 text-zinc-400">Upload raw footage and AI will auto-edit it into a polished video with cuts, transitions, and music.</p>
-            <div className="rounded-xl border border-amber-800 bg-amber-950/30 p-4 text-sm text-amber-300">
-              Coming soon — requires a Shotstack API key. Sign up free at{" "}
-              <a href="https://shotstack.io" target="_blank" rel="noopener noreferrer" className="underline">shotstack.io</a>{" "}
-              and share the key to activate this tab.
-            </div>
-          </section>
+          <>
+            <section className="rounded-2xl border border-zinc-800 bg-zinc-900/60 p-6 shadow-lg">
+              <h2 className="mb-1 text-lg font-bold">Long Form Video Editor</h2>
+              <p className="mb-5 text-sm text-zinc-400">Upload raw footage — AI auto-edits it into a polished video with cuts and transitions.</p>
+              <div className="flex flex-col gap-4">
+                <div>
+                  <label className="mb-2 block text-sm font-medium text-zinc-300">Video File</label>
+                  <input type="file" accept="video/*"
+                    onChange={(e) => setLfFile(e.target.files?.[0] ?? null)}
+                    className="w-full rounded-xl border border-zinc-700 bg-zinc-950 p-3 text-sm text-zinc-300 file:mr-3 file:rounded-lg file:border-0 file:bg-violet-600 file:px-3 file:py-1 file:text-sm file:font-semibold file:text-white" />
+                  {lfFile && <p className="mt-1 text-xs text-zinc-500">{lfFile.name} ({(lfFile.size / 1024 / 1024).toFixed(1)} MB)</p>}
+                </div>
+                <div className="grid grid-cols-2 gap-4">
+                  <div>
+                    <label className="mb-2 block text-sm font-medium text-zinc-300">Output Length</label>
+                    <select value={lfLength} onChange={(e) => setLfLength(e.target.value)}
+                      className="w-full rounded-xl border border-zinc-700 bg-zinc-950 p-3 text-sm text-zinc-100 focus:border-violet-500 focus:outline-none">
+                      <option value="30">30 seconds</option>
+                      <option value="60">60 seconds</option>
+                      <option value="90">90 seconds</option>
+                      <option value="120">2 minutes</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label className="mb-2 block text-sm font-medium text-zinc-300">Style</label>
+                    <select value={lfStyle} onChange={(e) => setLfStyle(e.target.value)}
+                      className="w-full rounded-xl border border-zinc-700 bg-zinc-950 p-3 text-sm text-zinc-100 focus:border-violet-500 focus:outline-none">
+                      <option value="highlights">Highlights Reel</option>
+                      <option value="documentary">Documentary Cut</option>
+                      <option value="social">Social Media</option>
+                    </select>
+                  </div>
+                </div>
+                <div>
+                  <label className="mb-2 block text-sm font-medium text-zinc-300">Opening Title (optional)</label>
+                  <input value={lfTitle} onChange={(e) => setLfTitle(e.target.value)}
+                    placeholder="e.g. Summer 2024 Highlights"
+                    className="w-full rounded-xl border border-zinc-700 bg-zinc-950 p-3 text-sm text-zinc-100 placeholder:text-zinc-500 focus:border-violet-500 focus:outline-none" />
+                </div>
+                <div className="flex items-center gap-3">
+                  <label className="text-sm font-medium text-zinc-300">Environment</label>
+                  <div className="flex rounded-xl border border-zinc-700 bg-zinc-950 p-1">
+                    {(["sandbox", "production"] as const).map((e) => (
+                      <button key={e} onClick={() => setLfEnv(e)}
+                        className={`rounded-lg px-3 py-1 text-xs font-semibold capitalize transition ${lfEnv === e ? "bg-violet-600 text-white" : "text-zinc-400 hover:text-zinc-200"}`}>
+                        {e}
+                      </button>
+                    ))}
+                  </div>
+                  {lfEnv === "sandbox" && <span className="text-xs text-amber-400">Watermarked output</span>}
+                </div>
+                <button onClick={handleLfRender} disabled={lfRendering || !lfFile}
+                  className="mt-2 w-full rounded-xl bg-violet-600 px-4 py-3 text-sm font-semibold text-white transition hover:bg-violet-500 disabled:cursor-not-allowed disabled:opacity-60">
+                  {lfRendering ? "Rendering…" : "Auto-Edit Video"}
+                </button>
+              </div>
+            </section>
+
+            {lfError && <div className="mt-4 rounded-xl border border-red-800 bg-red-950/50 p-4 text-sm text-red-300">{lfError}</div>}
+
+            {lfRendering && lfStatus && (
+              <div className="mt-6 flex items-center gap-3 text-zinc-400">
+                <div className="h-5 w-5 animate-spin rounded-full border-2 border-zinc-700 border-t-violet-500" />
+                <p className="text-sm">{lfStatus}</p>
+              </div>
+            )}
+
+            {lfResultUrl && (
+              <section className="mt-8 rounded-2xl border border-zinc-800 bg-zinc-900/60 p-6">
+                <h3 className="mb-4 text-lg font-semibold text-zinc-200">Edited Video Ready</h3>
+                <video src={lfResultUrl} controls className="mb-4 w-full rounded-xl border border-zinc-700" />
+                <a href={lfResultUrl} download target="_blank" rel="noopener noreferrer"
+                  className="inline-block rounded-xl bg-violet-600 px-5 py-2.5 text-sm font-semibold text-white hover:bg-violet-500">
+                  Download Video
+                </a>
+              </section>
+            )}
+          </>
         )}
 
       </main>

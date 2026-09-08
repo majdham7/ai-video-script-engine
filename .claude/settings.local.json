@@ -36,7 +36,18 @@
       "Bash(mkdir -p /Users/majd/engine/app/api/video/start /Users/majd/engine/app/api/video/\\\\[jobId\\\\]/poll /Users/majd/engine/app/api/video/\\\\[jobId\\\\]/build)",
       "Bash(node -e \"console.log\\(require\\('./node_modules/next/package.json'\\).version\\)\")",
       "Bash(ls -lh \"/Users/majd/Downloads/Revamp Your SAT Prep!.mp4\" 2>/dev/null || echo \"file not found\")",
-      "Bash(node -e \"const p = require\\('@ffprobe-installer/ffprobe'\\); console.log\\(JSON.stringify\\(p\\)\\)\")"
+      "Bash(node -e \"const p = require\\('@ffprobe-installer/ffprobe'\\); console.log\\(JSON.stringify\\(p\\)\\)\")",
+      "Bash(curl -s -X GET \"https://api.opus.pro/v1/projects\" -H \"Authorization: sk-WP0FyQN9BbhMWP4D8VASmT0x-FKHoxioYN97EiHv\")",
+      "Bash(curl -s -X POST https://api.opus.pro/v1/clip -H 'Authorization: sk-WP0FyQN9BbhMWP4D8VASmT0x-FKHoxioYN97EiHv' -H 'Content-Type: application/json' -d '{\"url\":\"https://www.youtube.com/watch?v=dQw4w9WgXcQ\"}')",
+      "Bash(curl -s \"https://api.opus.pro/\")",
+      "Bash(curl -s \"https://api.opus.pro/v1\")",
+      "Bash(curl -s -X POST https://api.opus.pro/v1/clips -H 'Authorization: sk-WP0FyQN9BbhMWP4D8VASmT0x-FKHoxioYN97EiHv' -H 'Content-Type: application/json' -d '{\"video_url\":\"https://www.youtube.com/watch?v=dQw4w9WgXcQ\"}')",
+      "WebFetch(domain:help.opus.pro)",
+      "Bash(curl -s -X GET 'https://api.opus.pro/api/exportable-clips?q=findByProjectId&projectId=test' -H 'Authorization: sk-WP0FyQN9BbhMWP4D8VASmT0x-FKHoxioYN97EiHv')",
+      "Bash(vercel env *)",
+      "Bash(git commit -m 'Add Clip Videos and Long Form Edit tabs with Opus Clip integration *)",
+      "Bash(git commit -m 'Implement Long Form Video Editor tab with Shotstack API *)",
+      "Bash(git commit -m 'Fix longform render route crashes + add longer output length options *)"
     ]
   }
 }

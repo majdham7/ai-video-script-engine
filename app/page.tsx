@@ -743,9 +743,12 @@ export default function Home() {
                     <select value={lfLength} onChange={(e) => setLfLength(e.target.value)}
                       className="w-full rounded-xl border border-zinc-700 bg-zinc-950 p-3 text-sm text-zinc-100 focus:border-violet-500 focus:outline-none">
                       <option value="30">30 seconds</option>
-                      <option value="60">60 seconds</option>
-                      <option value="90">90 seconds</option>
+                      <option value="60">1 minute</option>
                       <option value="120">2 minutes</option>
+                      <option value="180">3 minutes</option>
+                      <option value="300">5 minutes</option>
+                      <option value="480">8 minutes</option>
+                      <option value="600">10 minutes</option>
                     </select>
                   </div>
                   <div>

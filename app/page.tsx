@@ -8,6 +8,7 @@ import { useState, useRef } from "react";
 
 const STYLES = ["TikTok Ad", "Cinematic", "Documentary", "Luxury Brand", "Funny Meme", "Startup Promo"] as const;
 const LENGTHS = ["30s", "60s", "90s", "2min"] as const;
+const CLIP_DURATIONS = ["15-30", "30-60", "60-90"] as const;
 
 const PLATFORMS = ["Instagram Post", "Instagram Story", "TikTok Cover", "Twitter / X", "LinkedIn", "YouTube Thumbnail", "Facebook Post"] as const;
 const IMAGE_STYLES = ["Photorealistic", "Cinematic", "Illustration", "3D Render", "Minimalist", "Neon / Cyberpunk", "Vintage / Retro", "Bold & Graphic"] as const;
@@ -62,8 +63,17 @@ interface GeneratedImage {
 // Component
 // ---------------------------------------------------------------------------
 
+interface ClipResult {
+  id: string;
+  title: string;
+  score: number;
+  duration: number;
+  previewUrl: string | null;
+  downloadUrl: string | null;
+}
+
 export default function Home() {
-  const [activeTab, setActiveTab] = useState<"video" | "creative">("video");
+  const [activeTab, setActiveTab] = useState<"video" | "creative" | "clip" | "longform">("video");
 
   // --- Video Engine state ---
   const [script, setScript] = useState("");
@@ -80,6 +90,17 @@ export default function Home() {
   const [videoProgress, setVideoProgress] = useState<ProgressEvent | null>(null);
   const [videoUrl, setVideoUrl] = useState<string | null>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
+
+  // --- Clip Engine state ---
+  const [clipFile, setClipFile] = useState<File | null>(null);
+  const [clipDuration, setClipDuration] = useState<string>(CLIP_DURATIONS[0]);
+  const [clipPrompt, setClipPrompt] = useState("");
+  const [clipping, setClipping] = useState(false);
+  const [clipProjectId, setClipProjectId] = useState<string | null>(null);
+  const [clipResults, setClipResults] = useState<ClipResult[]>([]);
+  const [clipError, setClipError] = useState<string | null>(null);
+  const [clipStatus, setClipStatus] = useState<string | null>(null);
+  const clipPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   // --- Creative Engine state ---
   const [imagePrompt, setImagePrompt] = useState("");
@@ -216,6 +237,47 @@ export default function Home() {
   // Creative Engine handlers
   // ---------------------------------------------------------------------------
 
+  async function handleClipVideo() {
+    if (!clipFile) { setClipError("Please select a video file."); return; }
+    setClipping(true); setClipError(null); setClipResults([]); setClipProjectId(null);
+    setClipStatus("Uploading video...");
+    try {
+      const form = new FormData();
+      form.append("video", clipFile);
+      form.append("duration", clipDuration);
+      form.append("model", "ClipAnything");
+      if (clipPrompt.trim()) form.append("prompt", clipPrompt);
+
+      const res = await fetch("/api/clip/start", { method: "POST", body: form });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error ?? "Failed to start clipping.");
+      setClipProjectId(data.projectId);
+      setClipStatus("Opus Clip is analyzing your video… (~2-5 min)");
+
+      // Poll every 15s
+      if (clipPollRef.current) clearInterval(clipPollRef.current);
+      clipPollRef.current = setInterval(async () => {
+        try {
+          const poll = await fetch(`/api/clip/status?projectId=${data.projectId}`);
+          const pollData = await poll.json();
+          if (pollData.error) { clearInterval(clipPollRef.current!); setClipError(pollData.error); setClipping(false); return; }
+          if (pollData.clips?.length > 0) {
+            setClipResults(pollData.clips);
+            setClipStatus(`${pollData.ready}/${pollData.clips.length} clips ready`);
+            if (pollData.ready === pollData.clips.length) {
+              clearInterval(clipPollRef.current!);
+              setClipping(false);
+              setClipStatus(null);
+            }
+          }
+        } catch { /* keep polling */ }
+      }, 15000);
+    } catch (err) {
+      setClipError(err instanceof Error ? err.message : "Unexpected error.");
+      setClipping(false);
+    }
+  }
+
   async function handleGenerateImages() {
     if (!imagePrompt.trim()) { setImageError("Please enter a prompt."); return; }
     setLoadingImages(true); setImageError(null); setGeneratedImages([]);
@@ -250,18 +312,23 @@ export default function Home() {
         </header>
 
         {/* Tab bar */}
-        <div className="mb-8 flex gap-1 rounded-xl border border-zinc-800 bg-zinc-900 p-1">
-          {(["video", "creative"] as const).map((tab) => (
+        <div className="mb-8 grid grid-cols-2 gap-1 rounded-xl border border-zinc-800 bg-zinc-900 p-1 sm:grid-cols-4">
+          {([
+            { id: "video", label: "🎬 Video Engine" },
+            { id: "creative", label: "🎨 Image Engine" },
+            { id: "clip", label: "✂️ Clip Videos" },
+            { id: "longform", label: "🎞️ Long Form Edit" },
+          ] as const).map((tab) => (
             <button
-              key={tab}
-              onClick={() => setActiveTab(tab)}
-              className={`flex-1 rounded-lg py-2.5 text-sm font-semibold transition ${
-                activeTab === tab
+              key={tab.id}
+              onClick={() => setActiveTab(tab.id)}
+              className={`rounded-lg py-2.5 text-sm font-semibold transition ${
+                activeTab === tab.id
                   ? "bg-indigo-600 text-white shadow"
                   : "text-zinc-400 hover:text-zinc-200"
               }`}
             >
-              {tab === "video" ? "🎬  Video Script Engine" : "🎨  Creative Image Engine"}
+              {tab.label}
             </button>
           ))}
         </div>
@@ -522,6 +589,102 @@ export default function Home() {
             )}
           </>
         )}
+        {/* ================================================================== */}
+        {/* CLIP ENGINE TAB                                                     */}
+        {/* ================================================================== */}
+        {activeTab === "clip" && (
+          <>
+            <section className="rounded-2xl border border-zinc-800 bg-zinc-900/60 p-6 shadow-lg">
+              <h2 className="mb-1 text-lg font-bold">AI Video Clipper</h2>
+              <p className="mb-5 text-sm text-zinc-400">Upload a long video — Opus Clip finds the best viral moments automatically.</p>
+              <div className="flex flex-col gap-4">
+                <div>
+                  <label className="mb-2 block text-sm font-medium text-zinc-300">Video File</label>
+                  <input type="file" accept="video/*"
+                    onChange={(e) => setClipFile(e.target.files?.[0] ?? null)}
+                    className="w-full rounded-xl border border-zinc-700 bg-zinc-950 p-3 text-sm text-zinc-300 file:mr-3 file:rounded-lg file:border-0 file:bg-indigo-600 file:px-3 file:py-1 file:text-sm file:font-semibold file:text-white" />
+                  {clipFile && <p className="mt-1 text-xs text-zinc-500">{clipFile.name} ({(clipFile.size / 1024 / 1024).toFixed(1)} MB)</p>}
+                </div>
+                <div className="grid grid-cols-2 gap-4">
+                  <div>
+                    <label className="mb-2 block text-sm font-medium text-zinc-300">Clip Length</label>
+                    <select value={clipDuration} onChange={(e) => setClipDuration(e.target.value)}
+                      className="w-full rounded-xl border border-zinc-700 bg-zinc-950 p-3 text-sm text-zinc-100 focus:border-indigo-500 focus:outline-none">
+                      {CLIP_DURATIONS.map((d) => <option key={d} value={d}>{d.replace("-", "–")} seconds</option>)}
+                    </select>
+                  </div>
+                </div>
+                <div>
+                  <label className="mb-2 block text-sm font-medium text-zinc-300">Focus (optional)</label>
+                  <input value={clipPrompt} onChange={(e) => setClipPrompt(e.target.value)}
+                    placeholder="e.g. funny moments, key insights, best arguments..."
+                    className="w-full rounded-xl border border-zinc-700 bg-zinc-950 p-3 text-sm text-zinc-100 placeholder:text-zinc-500 focus:border-indigo-500 focus:outline-none" />
+                </div>
+                <button onClick={handleClipVideo} disabled={clipping || !clipFile}
+                  className="mt-2 w-full rounded-xl bg-indigo-600 px-4 py-3 text-sm font-semibold text-white transition hover:bg-indigo-500 disabled:cursor-not-allowed disabled:opacity-60">
+                  {clipping ? "Clipping…" : "Find Best Clips"}
+                </button>
+              </div>
+            </section>
+
+            {clipError && <div className="mt-4 rounded-xl border border-red-800 bg-red-950/50 p-4 text-sm text-red-300">{clipError}</div>}
+
+            {clipping && clipStatus && (
+              <div className="mt-6 flex items-center gap-3 text-zinc-400">
+                <div className="h-5 w-5 animate-spin rounded-full border-2 border-zinc-700 border-t-indigo-500" />
+                <p className="text-sm">{clipStatus}</p>
+              </div>
+            )}
+
+            {clipResults.length > 0 && (
+              <section className="mt-8">
+                <h3 className="mb-4 text-lg font-semibold text-zinc-200">
+                  {clipResults.filter(c => c.downloadUrl).length} clips ready
+                  {clipping && <span className="ml-2 text-sm font-normal text-zinc-500">— more processing…</span>}
+                </h3>
+                <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+                  {clipResults.filter(c => c.downloadUrl).sort((a, b) => b.score - a.score).map((clip) => (
+                    <div key={clip.id} className="rounded-2xl border border-zinc-800 bg-zinc-900/60 p-4">
+                      <div className="mb-3 flex items-center justify-between">
+                        <p className="text-sm font-semibold text-zinc-200 line-clamp-2">{clip.title}</p>
+                        <span className="ml-2 shrink-0 rounded-full bg-indigo-600/20 px-2 py-0.5 text-xs font-bold text-indigo-300">
+                          {Math.round(clip.score)}%
+                        </span>
+                      </div>
+                      {clip.previewUrl && (
+                        <video src={clip.previewUrl} controls className="mb-3 w-full rounded-xl border border-zinc-700" />
+                      )}
+                      <div className="flex items-center justify-between text-xs text-zinc-500">
+                        <span>{clip.duration ? `${clip.duration.toFixed(1)}s` : ""}</span>
+                        <a href={clip.downloadUrl!} download target="_blank" rel="noopener noreferrer"
+                          className="rounded-lg bg-indigo-600 px-3 py-1.5 font-semibold text-white hover:bg-indigo-500">
+                          Download
+                        </a>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </section>
+            )}
+          </>
+        )}
+
+        {/* ================================================================== */}
+        {/* LONG FORM EDIT TAB                                                  */}
+        {/* ================================================================== */}
+        {activeTab === "longform" && (
+          <section className="rounded-2xl border border-zinc-800 bg-zinc-900/60 p-8 text-center shadow-lg">
+            <div className="mb-4 text-4xl">🎞️</div>
+            <h2 className="mb-2 text-xl font-bold">Long Form Video Editor</h2>
+            <p className="mb-6 text-zinc-400">Upload raw footage and AI will auto-edit it into a polished video with cuts, transitions, and music.</p>
+            <div className="rounded-xl border border-amber-800 bg-amber-950/30 p-4 text-sm text-amber-300">
+              Coming soon — requires a Shotstack API key. Sign up free at{" "}
+              <a href="https://shotstack.io" target="_blank" rel="noopener noreferrer" className="underline">shotstack.io</a>{" "}
+              and share the key to activate this tab.
+            </div>
+          </section>
+        )}
+
       </main>
     </div>
   );

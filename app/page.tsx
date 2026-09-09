@@ -254,13 +254,20 @@ export default function Home() {
     setClipping(true); setClipError(null); setClipResults([]); setClipProjectId(null);
     setClipStatus("Uploading video…");
     try {
-      const { upload } = await import("@vercel/blob/client");
-      const blob = await upload(clipFile.name, clipFile, { access: "public", handleUploadUrl: "/api/upload" });
+      const tokenRes = await fetch("/api/blob-token", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ filename: clipFile.name }) });
+      const { clientToken, pathname } = await tokenRes.json() as { clientToken: string; pathname: string };
+      const uploadRes = await fetch(`https://blob.vercel-storage.com/${pathname}`, {
+        method: "PUT",
+        headers: { Authorization: `Bearer ${clientToken}`, "Content-Type": clipFile.type || "video/mp4", "x-cache-control-max-age": "31536000" },
+        body: clipFile,
+      });
+      if (!uploadRes.ok) throw new Error("Failed to upload video to storage.");
+      const blobData = await uploadRes.json() as { url: string };
 
       const res = await fetch("/api/clip/start", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ videoUrl: blob.url, duration: clipDuration, model: "ClipAnything", prompt: clipPrompt }),
+        body: JSON.stringify({ videoUrl: blobData.url, duration: clipDuration, model: "ClipAnything", prompt: clipPrompt }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error ?? "Failed to start clipping.");
@@ -295,13 +302,22 @@ export default function Home() {
     if (!lfFile) { setLfError("Please select a video file."); return; }
     setLfRendering(true); setLfError(null); setLfResultUrl(null); setLfStatus("Uploading video…");
     try {
-      const { upload } = await import("@vercel/blob/client");
-      const blob = await upload(lfFile.name, lfFile, { access: "public", handleUploadUrl: "/api/upload" });
+      const tokenRes = await fetch("/api/blob-token", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ filename: lfFile.name }) });
+      const { clientToken, pathname } = await tokenRes.json() as { clientToken: string; pathname: string };
+      setLfStatus("Uploading video… (this may take a moment for large files)");
+      const uploadRes = await fetch(`https://blob.vercel-storage.com/${pathname}`, {
+        method: "PUT",
+        headers: { Authorization: `Bearer ${clientToken}`, "Content-Type": lfFile.type || "video/mp4", "x-cache-control-max-age": "31536000" },
+        body: lfFile,
+      });
+      if (!uploadRes.ok) throw new Error("Failed to upload video to storage.");
+      const blobData = await uploadRes.json() as { url: string };
+      setLfStatus("Submitting to Shotstack…");
 
       const res = await fetch("/api/longform/render", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ videoUrl: blob.url, outputLength: lfLength, style: lfStyle, title: lfTitle, env: lfEnv }),
+        body: JSON.stringify({ videoUrl: blobData.url, outputLength: lfLength, style: lfStyle, title: lfTitle, env: lfEnv }),
       });
       const rawText = await res.text();
       let data: { error?: string; renderId?: string; env?: string };

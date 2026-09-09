@@ -8,8 +8,8 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
       body,
       request: req,
       onBeforeGenerateToken: async () => ({
-        // no allowedContentTypes = allow everything
         maximumSizeInBytes: 500 * 1024 * 1024,
+        addRandomSuffix: true,
       }),
       onUploadCompleted: async () => {},
     });

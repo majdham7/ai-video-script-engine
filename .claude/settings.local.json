@@ -55,7 +55,9 @@
       "Bash(git commit -m 'Upload videos directly to Vercel Blob REST API, bypassing serverless functions *)",
       "Bash(git commit -m 'Fix duplicate json variable name build errors *)",
       "Bash(git commit -m 'Use @vercel/blob/client put\\(\\) for browser uploads — fixes CORS on direct blob PUT *)",
-      "Bash(git commit -m 'Switch back to upload\\(\\) for browser blob uploads, allow all content types *)"
+      "Bash(git commit -m 'Switch back to upload\\(\\) for browser blob uploads, allow all content types *)",
+      "Bash(node -e \"const p = require\\('/Users/majd/engine/node_modules/@vercel/blob/package.json'\\); console.log\\(JSON.stringify\\(p.exports?.['./client'], null, 2\\)\\)\")",
+      "Bash(git commit -m 'Fix upload handler: empty allowedContentTypes blocked all uploads *)"
     ]
   }
 }

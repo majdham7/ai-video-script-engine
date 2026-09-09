@@ -57,7 +57,8 @@
       "Bash(git commit -m 'Use @vercel/blob/client put\\(\\) for browser uploads — fixes CORS on direct blob PUT *)",
       "Bash(git commit -m 'Switch back to upload\\(\\) for browser blob uploads, allow all content types *)",
       "Bash(node -e \"const p = require\\('/Users/majd/engine/node_modules/@vercel/blob/package.json'\\); console.log\\(JSON.stringify\\(p.exports?.['./client'], null, 2\\)\\)\")",
-      "Bash(git commit -m 'Fix upload handler: empty allowedContentTypes blocked all uploads *)"
+      "Bash(git commit -m 'Fix upload handler: empty allowedContentTypes blocked all uploads *)",
+      "Bash(git commit -m 'Fix Shotstack API URLs to use /edit/ prefix + better error messages *)"
     ]
   }
 }

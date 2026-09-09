@@ -3,8 +3,8 @@ import { NextRequest, NextResponse } from "next/server";
 export const maxDuration = 30;
 
 const SHOTSTACK = {
-  sandbox: { url: "https://api.shotstack.io/stage/v1", key: process.env.SHOTSTACK_SANDBOX_KEY! },
-  production: { url: "https://api.shotstack.io/v1", key: process.env.SHOTSTACK_PROD_KEY! },
+  sandbox: { url: "https://api.shotstack.io/edit/stage/v1", key: process.env.SHOTSTACK_SANDBOX_KEY! },
+  production: { url: "https://api.shotstack.io/edit/v1", key: process.env.SHOTSTACK_PROD_KEY! },
 };
 
 export async function GET(req: NextRequest) {

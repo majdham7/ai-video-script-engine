@@ -3,8 +3,8 @@ import { NextRequest, NextResponse } from "next/server";
 export const maxDuration = 60;
 
 const SHOTSTACK_URLS: Record<string, string> = {
-  sandbox: "https://api.shotstack.io/stage/v1",
-  production: "https://api.shotstack.io/v1",
+  sandbox: "https://api.shotstack.io/edit/stage/v1",
+  production: "https://api.shotstack.io/edit/v1",
 };
 
 export async function POST(req: NextRequest) {
@@ -87,9 +87,10 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: `Shotstack returned invalid response: ${text.slice(0, 200)}` }, { status: 500 });
     }
 
-    const data = parsed as { response?: { id?: string }; message?: string };
+    const data = parsed as { response?: { id?: string }; message?: string; error?: string };
     if (!data.response?.id) {
-      return NextResponse.json({ error: data.message ?? "No render ID returned.", raw: parsed }, { status: 500 });
+      const msg = data.message ?? data.error ?? JSON.stringify(parsed).slice(0, 200);
+      return NextResponse.json({ error: `Shotstack: ${msg}` }, { status: 500 });
     }
 
     return NextResponse.json({ renderId: data.response.id, env });

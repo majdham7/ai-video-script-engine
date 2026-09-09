@@ -301,7 +301,9 @@ export default function Home() {
       form.append("title", lfTitle);
       form.append("env", lfEnv);
       const res = await fetch("/api/longform/render", { method: "POST", body: form });
-      const data = await res.json();
+      const rawText = await res.text();
+      let data: { error?: string; renderId?: string; env?: string };
+      try { data = JSON.parse(rawText); } catch { throw new Error(`Server error: ${rawText.slice(0, 200)}`); }
       if (!res.ok) throw new Error(data.error ?? "Failed to start render.");
       const { renderId, env } = data as { renderId: string; env: string };
       setLfStatus("Rendering video — this takes 1–3 minutes…");
@@ -309,7 +311,10 @@ export default function Home() {
       lfPollRef.current = setInterval(async () => {
         try {
           const poll = await fetch(`/api/longform/status?renderId=${renderId}&env=${env}`);
-          const pollData = await poll.json() as { status: string; url?: string; error?: string };
+          const pollText = await poll.text();
+          let pollData: { status: string; url?: string; error?: string };
+          try { pollData = JSON.parse(pollText); } catch { return; }
+
           if (pollData.error) { clearInterval(lfPollRef.current!); setLfError(pollData.error); setLfRendering(false); return; }
           setLfStatus(`Rendering… (${pollData.status})`);
           if (pollData.status === "done" && pollData.url) {

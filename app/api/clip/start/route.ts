@@ -1,5 +1,4 @@
 import { NextRequest, NextResponse } from "next/server";
-import { put } from "@vercel/blob";
 
 export const maxDuration = 60;
 
@@ -8,24 +7,18 @@ export async function POST(req: NextRequest) {
   if (!apiKey) return NextResponse.json({ error: "OPUS_CLIP_API_KEY not set." }, { status: 500 });
 
   try {
-    const formData = await req.formData();
-    const file = formData.get("video") as File | null;
-    const duration = (formData.get("duration") as string) ?? "30-90";
-    const model = (formData.get("model") as string) ?? "ClipAnything";
-    const customPrompt = (formData.get("prompt") as string) ?? "";
+    const json = await req.json() as { videoUrl?: string; duration?: string; model?: string; prompt?: string };
+    const videoUrl = json.videoUrl;
+    const duration = json.duration ?? "30-90";
+    const model = json.model ?? "ClipAnything";
+    const customPrompt = json.prompt ?? "";
 
-    if (!file) return NextResponse.json({ error: "No video file provided." }, { status: 400 });
-
-    // Upload to Vercel Blob so Opus Clip can fetch it via public URL
-    const blob = await put(`uploads/${Date.now()}-${file.name}`, file, {
-      access: "public",
-      contentType: file.type || "video/mp4",
-    });
+    if (!videoUrl) return NextResponse.json({ error: "No video URL provided." }, { status: 400 });
 
     const [minDur, maxDur] = duration.split("-").map(Number);
 
     const body: Record<string, unknown> = {
-      url: blob.url,
+      url: videoUrl,
       model,
       clipDurations: [[minDur, maxDur]],
       layoutAspectRatio: "portrait",

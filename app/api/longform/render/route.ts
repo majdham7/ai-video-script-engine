@@ -1,5 +1,4 @@
 import { NextRequest, NextResponse } from "next/server";
-import { put } from "@vercel/blob";
 
 export const maxDuration = 60;
 
@@ -10,14 +9,14 @@ const SHOTSTACK_URLS: Record<string, string> = {
 
 export async function POST(req: NextRequest) {
   try {
-    const formData = await req.formData();
-    const file = formData.get("video") as File | null;
-    const outputLength = parseInt((formData.get("outputLength") as string) ?? "60", 10);
-    const style = (formData.get("style") as string) ?? "highlights";
-    const title = (formData.get("title") as string) ?? "";
-    const env = (formData.get("env") as string) === "production" ? "production" : "sandbox";
+    const json = await req.json() as { videoUrl?: string; outputLength?: string; style?: string; title?: string; env?: string };
+    const videoSrc = json.videoUrl;
+    const outputLength = parseInt(json.outputLength ?? "60", 10);
+    const style = json.style ?? "highlights";
+    const title = json.title ?? "";
+    const env = json.env === "production" ? "production" : "sandbox";
 
-    if (!file) return NextResponse.json({ error: "No video file provided." }, { status: 400 });
+    if (!videoSrc) return NextResponse.json({ error: "No video URL provided." }, { status: 400 });
 
     const apiKey = env === "production"
       ? process.env.SHOTSTACK_PROD_KEY
@@ -26,14 +25,6 @@ export async function POST(req: NextRequest) {
     if (!apiKey) return NextResponse.json({ error: `SHOTSTACK_${env.toUpperCase()}_KEY not configured.` }, { status: 500 });
 
     const baseUrl = SHOTSTACK_URLS[env];
-
-    // Upload to Vercel Blob so Shotstack can fetch it
-    const blob = await put(`longform/${Date.now()}-${file.name}`, file, {
-      access: "public",
-      contentType: file.type || "video/mp4",
-    });
-
-    const videoSrc = blob.url;
     const tracks: unknown[] = [];
 
     if (style === "highlights") {

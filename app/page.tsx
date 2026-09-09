@@ -252,15 +252,16 @@ export default function Home() {
   async function handleClipVideo() {
     if (!clipFile) { setClipError("Please select a video file."); return; }
     setClipping(true); setClipError(null); setClipResults([]); setClipProjectId(null);
-    setClipStatus("Uploading video...");
+    setClipStatus("Uploading video…");
     try {
-      const form = new FormData();
-      form.append("video", clipFile);
-      form.append("duration", clipDuration);
-      form.append("model", "ClipAnything");
-      if (clipPrompt.trim()) form.append("prompt", clipPrompt);
+      const { upload } = await import("@vercel/blob/client");
+      const blob = await upload(clipFile.name, clipFile, { access: "public", handleUploadUrl: "/api/upload" });
 
-      const res = await fetch("/api/clip/start", { method: "POST", body: form });
+      const res = await fetch("/api/clip/start", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ videoUrl: blob.url, duration: clipDuration, model: "ClipAnything", prompt: clipPrompt }),
+      });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error ?? "Failed to start clipping.");
       setClipProjectId(data.projectId);
@@ -294,13 +295,14 @@ export default function Home() {
     if (!lfFile) { setLfError("Please select a video file."); return; }
     setLfRendering(true); setLfError(null); setLfResultUrl(null); setLfStatus("Uploading video…");
     try {
-      const form = new FormData();
-      form.append("video", lfFile);
-      form.append("outputLength", lfLength);
-      form.append("style", lfStyle);
-      form.append("title", lfTitle);
-      form.append("env", lfEnv);
-      const res = await fetch("/api/longform/render", { method: "POST", body: form });
+      const { upload } = await import("@vercel/blob/client");
+      const blob = await upload(lfFile.name, lfFile, { access: "public", handleUploadUrl: "/api/upload" });
+
+      const res = await fetch("/api/longform/render", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ videoUrl: blob.url, outputLength: lfLength, style: lfStyle, title: lfTitle, env: lfEnv }),
+      });
       const rawText = await res.text();
       let data: { error?: string; renderId?: string; env?: string };
       try { data = JSON.parse(rawText); } catch { throw new Error(`Server error: ${rawText.slice(0, 200)}`); }

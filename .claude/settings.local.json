@@ -47,7 +47,9 @@
       "Bash(vercel env *)",
       "Bash(git commit -m 'Add Clip Videos and Long Form Edit tabs with Opus Clip integration *)",
       "Bash(git commit -m 'Implement Long Form Video Editor tab with Shotstack API *)",
-      "Bash(git commit -m 'Fix longform render route crashes + add longer output length options *)"
+      "Bash(git commit -m 'Fix longform render route crashes + add longer output length options *)",
+      "Bash(git commit -m 'Fix longform Safari JSON parse crash — show real server error instead *)",
+      "Bash(git commit -m 'Upload videos client-side to bypass Vercel 4.5MB payload limit *)"
     ]
   }
 }

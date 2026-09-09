@@ -256,13 +256,8 @@ export default function Home() {
     try {
       const tokenRes = await fetch("/api/blob-token", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ filename: clipFile.name }) });
       const { clientToken, pathname } = await tokenRes.json() as { clientToken: string; pathname: string };
-      const uploadRes = await fetch(`https://blob.vercel-storage.com/${pathname}`, {
-        method: "PUT",
-        headers: { Authorization: `Bearer ${clientToken}`, "Content-Type": clipFile.type || "video/mp4", "x-cache-control-max-age": "31536000" },
-        body: clipFile,
-      });
-      if (!uploadRes.ok) throw new Error("Failed to upload video to storage.");
-      const blobData = await uploadRes.json() as { url: string };
+      const { put: blobPut } = await import("@vercel/blob/client");
+      const blobData = await blobPut(pathname, clipFile, { access: "public", token: clientToken });
 
       const res = await fetch("/api/clip/start", {
         method: "POST",
@@ -305,13 +300,8 @@ export default function Home() {
       const tokenRes = await fetch("/api/blob-token", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ filename: lfFile.name }) });
       const { clientToken, pathname } = await tokenRes.json() as { clientToken: string; pathname: string };
       setLfStatus("Uploading video… (this may take a moment for large files)");
-      const uploadRes = await fetch(`https://blob.vercel-storage.com/${pathname}`, {
-        method: "PUT",
-        headers: { Authorization: `Bearer ${clientToken}`, "Content-Type": lfFile.type || "video/mp4", "x-cache-control-max-age": "31536000" },
-        body: lfFile,
-      });
-      if (!uploadRes.ok) throw new Error("Failed to upload video to storage.");
-      const blobData = await uploadRes.json() as { url: string };
+      const { put: blobPut } = await import("@vercel/blob/client");
+      const blobData = await blobPut(pathname, lfFile, { access: "public", token: clientToken });
       setLfStatus("Submitting to Shotstack…");
 
       const res = await fetch("/api/longform/render", {

@@ -82,14 +82,14 @@ export async function POST(req: NextRequest) {
     });
 
     const text = await res.text();
-    let json: unknown;
-    try { json = JSON.parse(text); } catch {
+    let parsed: unknown;
+    try { parsed = JSON.parse(text); } catch {
       return NextResponse.json({ error: `Shotstack returned invalid response: ${text.slice(0, 200)}` }, { status: 500 });
     }
 
-    const data = json as { response?: { id?: string }; message?: string };
+    const data = parsed as { response?: { id?: string }; message?: string };
     if (!data.response?.id) {
-      return NextResponse.json({ error: data.message ?? "No render ID returned.", raw: json }, { status: 500 });
+      return NextResponse.json({ error: data.message ?? "No render ID returned.", raw: parsed }, { status: 500 });
     }
 
     return NextResponse.json({ renderId: data.response.id, env });

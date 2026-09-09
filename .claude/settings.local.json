@@ -52,7 +52,8 @@
       "Bash(git commit -m 'Upload videos client-side to bypass Vercel 4.5MB payload limit *)",
       "Bash(node -e \"require\\('@vercel/blob/client'\\)\")",
       "Bash(node -e \"const b = require\\('@vercel/blob/client'\\); console.log\\(Object.keys\\(b\\)\\)\")",
-      "Bash(git commit -m 'Upload videos directly to Vercel Blob REST API, bypassing serverless functions *)"
+      "Bash(git commit -m 'Upload videos directly to Vercel Blob REST API, bypassing serverless functions *)",
+      "Bash(git commit -m 'Fix duplicate json variable name build errors *)"
     ]
   }
 }

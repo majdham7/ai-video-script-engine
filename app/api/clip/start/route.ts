@@ -39,16 +39,16 @@ export async function POST(req: NextRequest) {
     });
 
     const text = await res.text();
-    let json: unknown;
-    try { json = JSON.parse(text); } catch { return NextResponse.json({ error: `Opus Clip error: ${text}` }, { status: 500 }); }
+    let parsed: unknown;
+    try { parsed = JSON.parse(text); } catch { return NextResponse.json({ error: `Opus Clip error: ${text}` }, { status: 500 }); }
 
-    const data = json as { id?: string; projectId?: string; errorMessage?: string };
+    const data = parsed as { id?: string; projectId?: string; errorMessage?: string };
     if (data.errorMessage) return NextResponse.json({ error: data.errorMessage }, { status: 500 });
 
     const projectId = data.id ?? data.projectId;
-    if (!projectId) return NextResponse.json({ error: "No project ID returned.", raw: json }, { status: 500 });
+    if (!projectId) return NextResponse.json({ error: "No project ID returned.", raw: parsed }, { status: 500 });
 
-    return NextResponse.json({ projectId, videoUrl: blob.url });
+    return NextResponse.json({ projectId, videoUrl });
   } catch (err) {
     console.error("clip/start error:", err);
     return NextResponse.json({ error: err instanceof Error ? err.message : "Failed." }, { status: 500 });

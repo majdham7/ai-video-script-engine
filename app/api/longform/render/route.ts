@@ -89,8 +89,7 @@ export async function POST(req: NextRequest) {
 
     const data = parsed as { response?: { id?: string }; message?: string; error?: string };
     if (!data.response?.id) {
-      const msg = data.message ?? data.error ?? JSON.stringify(parsed).slice(0, 200);
-      return NextResponse.json({ error: `Shotstack: ${msg}` }, { status: 500 });
+      return NextResponse.json({ error: `Shotstack HTTP ${res.status}: ${JSON.stringify(parsed).slice(0, 300)}` }, { status: 500 });
     }
 
     return NextResponse.json({ renderId: data.response.id, env });

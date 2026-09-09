@@ -59,7 +59,8 @@
       "Bash(node -e \"const p = require\\('/Users/majd/engine/node_modules/@vercel/blob/package.json'\\); console.log\\(JSON.stringify\\(p.exports?.['./client'], null, 2\\)\\)\")",
       "Bash(git commit -m 'Fix upload handler: empty allowedContentTypes blocked all uploads *)",
       "Bash(git commit -m 'Fix Shotstack API URLs to use /edit/ prefix + better error messages *)",
-      "Bash(git commit -m 'Add addRandomSuffix to blob uploads to prevent conflicts *)"
+      "Bash(git commit -m 'Add addRandomSuffix to blob uploads to prevent conflicts *)",
+      "Bash(git commit -m 'Add full Shotstack response to error message for debugging *)"
     ]
   }
 }

@@ -254,10 +254,8 @@ export default function Home() {
     setClipping(true); setClipError(null); setClipResults([]); setClipProjectId(null);
     setClipStatus("Uploading video…");
     try {
-      const tokenRes = await fetch("/api/blob-token", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ filename: clipFile.name }) });
-      const { clientToken, pathname } = await tokenRes.json() as { clientToken: string; pathname: string };
-      const { put: blobPut } = await import("@vercel/blob/client");
-      const blobData = await blobPut(pathname, clipFile, { access: "public", token: clientToken });
+      const { upload: blobUpload } = await import("@vercel/blob/client");
+      const blobData = await blobUpload(clipFile.name, clipFile, { access: "public", handleUploadUrl: "/api/upload" });
 
       const res = await fetch("/api/clip/start", {
         method: "POST",
@@ -297,11 +295,9 @@ export default function Home() {
     if (!lfFile) { setLfError("Please select a video file."); return; }
     setLfRendering(true); setLfError(null); setLfResultUrl(null); setLfStatus("Uploading video…");
     try {
-      const tokenRes = await fetch("/api/blob-token", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ filename: lfFile.name }) });
-      const { clientToken, pathname } = await tokenRes.json() as { clientToken: string; pathname: string };
       setLfStatus("Uploading video… (this may take a moment for large files)");
-      const { put: blobPut } = await import("@vercel/blob/client");
-      const blobData = await blobPut(pathname, lfFile, { access: "public", token: clientToken });
+      const { upload: blobUpload } = await import("@vercel/blob/client");
+      const blobData = await blobUpload(lfFile.name, lfFile, { access: "public", handleUploadUrl: "/api/upload" });
       setLfStatus("Submitting to Shotstack…");
 
       const res = await fetch("/api/longform/render", {
